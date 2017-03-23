@@ -126,7 +126,7 @@ optimizedProjectInto sketchPlane point =
     in
         Point2d
             ( dx * ux + dy * uy + dz * uz
-            , dx * vx + dy * vy + dz * uz
+            , dx * vx + dy * vy + dz * vz
             )
 
 
