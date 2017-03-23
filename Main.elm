@@ -11,48 +11,60 @@ import OpenSolid.Direction2d as Direction2d
 import OpenSolid.SketchPlane3d as SketchPlane3d
 import Time exposing (Time)
 import AnimationFrame
-import Color
-import Color.Convert
+import Color exposing (Color)
 
 
 type alias Face =
-    { points : List Point3d
+    { points : ( Point3d, Point3d, Point3d, Point3d )
     , color : String
+    , minDistanceFromPlane : Float
     }
 
 
-grid : Time -> List Face
-grid time =
+colorString : Color -> String
+colorString color =
     let
-        f ( x, y ) =
-            let
-                r =
-                    sqrt (x ^ 2 + y ^ 2)
+        { red, green, blue, alpha } =
+            Color.toRgb color
+    in
+        "rgb(" ++ toString red ++ "," ++ toString green ++ "," ++ toString blue ++ ")"
 
-                z =
-                    r * pi / 15 * sin (pi / 80 * r + time / 100)
-            in
-                z
 
+heightFunction : Time -> Float -> Float -> Float
+heightFunction time x y =
+    let
+        r =
+            sqrt (x ^ 2 + y ^ 2)
+
+        z =
+            r * pi / 15 * sin (pi / 80 * r + time / 100)
+    in
+        z
+
+
+grid : Time -> Plane3d -> List Face
+grid time plane =
+    let
         gridElement ( x, y ) =
             let
                 color =
-                    Color.hsl (f ( x, y ) / 10) 0.7 0.4
-                        |> Color.Convert.colorToHex
+                    Color.hsl (heightFunction time x y / 10) 0.7 0.4
+                        |> colorString
 
-                point ( x, y ) =
-                    Point3d ( x, y, f ( x, y ) )
+                point x y =
+                    Point3d ( x, y, heightFunction time x y )
 
                 points =
-                    [ point ( x - 10, y - 10 )
-                    , point ( x, y - 10 )
-                    , point ( x, y )
-                    , point ( x - 10, y )
-                    ]
+                    ( point (x - 10) (y - 10)
+                    , point x (y - 10)
+                    , point x y
+                    , point (x - 10) y
+                    )
             in
                 Face
                     points
                     color
+                    (minDistanceFrom plane points)
 
         range =
             (List.range -12 12) |> List.map (toFloat >> (*) 10)
@@ -75,48 +87,112 @@ sketchPlane time =
         |> SketchPlane3d.rotateAroundOwn SketchPlane3d.yAxis (degrees 0.05 * time)
 
 
+draw face2d =
+    let
+        ( p1, p2, p3, p4 ) =
+            face2d.points
+    in
+        Svg.polygon2d
+            [ Attributes.fill face2d.color ]
+            (Polygon2d [ p1, p2, p3, p4 ])
+
+
+optimizedProjectInto : SketchPlane3d -> Point3d -> Point2d
+optimizedProjectInto sketchPlane point =
+    let
+        (SketchPlane3d { originPoint, xDirection, yDirection }) =
+            sketchPlane
+
+        (Point3d ( x0, y0, z0 )) =
+            originPoint
+
+        (Direction3d ( ux, uy, uz )) =
+            xDirection
+
+        (Direction3d ( vx, vy, vz )) =
+            yDirection
+
+        (Point3d ( x, y, z )) =
+            point
+
+        dx =
+            x - x0
+
+        dy =
+            y - y0
+
+        dz =
+            z - z0
+    in
+        Point2d
+            ( dx * ux + dy * uy + dz * uz
+            , dx * vx + dy * vy + dz * uz
+            )
+
+
 svgProjection : Time -> List (Svg Msg)
 svgProjection time =
     let
-        draw face =
-            Svg.polygon2d
-                [ Attributes.stroke "white"
-                , Attributes.strokeWidth "0.5"
-                , Attributes.strokeOpacity "0.5"
-                , Attributes.fill face.color
-                , Attributes.fillOpacity "0.5"
-                ]
-                (Polygon2d face.points)
-
         plane =
             sketchPlane time
+
+        project =
+            optimizedProjectInto plane
     in
-        time
-            |> grid
-            |> sortByDistanceToPlane (SketchPlane3d.plane plane)
+        grid time (SketchPlane3d.plane plane)
+            |> List.sortBy .minDistanceFromPlane
             |> List.map
                 (\face ->
                     { points =
-                        (face.points
-                            |> List.map (Point3d.projectInto plane)
-                        )
+                        let
+                            ( p1, p2, p3, p4 ) =
+                                face.points
+                        in
+                            ( project p1, project p2, project p3, project p4 )
                     , color = face.color
                     }
                         |> draw
                 )
 
 
-sortByDistanceToPlane : Plane3d -> List Face -> List Face
-sortByDistanceToPlane plane faces =
+optimizedSignedDistanceFrom : Plane3d -> Point3d -> Float
+optimizedSignedDistanceFrom plane point =
     let
-        minDistance face =
-            face.points
-                |> List.map (Point3d.signedDistanceFrom plane)
-                |> List.minimum
-                |> Maybe.withDefault 0
+        (Plane3d { originPoint, normalDirection }) =
+            plane
+
+        (Point3d ( x0, y0, z0 )) =
+            originPoint
+
+        (Direction3d ( nx, ny, nz )) =
+            normalDirection
+
+        (Point3d ( x, y, z )) =
+            point
     in
-        faces
-            |> List.sortBy minDistance
+        (x - x0) * nx + (y - y0) * ny + (z - z0) * nz
+
+
+minDistanceFrom : Plane3d -> ( Point3d, Point3d, Point3d, Point3d ) -> Float
+minDistanceFrom plane ( p1, p2, p3, p4 ) =
+    let
+        d1 =
+            optimizedSignedDistanceFrom plane p1
+
+        d2 =
+            optimizedSignedDistanceFrom plane p2
+
+        d3 =
+            optimizedSignedDistanceFrom plane p3
+
+        d4 =
+            optimizedSignedDistanceFrom plane p4
+    in
+        min (min d1 d2) (min d3 d4)
+
+
+
+--List.sortBy (minDistanceFrom plane)
 
 
 container : ( Float, Float ) -> ( Float, Float ) -> List (Svg Msg) -> Html Msg
@@ -139,6 +215,10 @@ container ( minX, minY ) ( maxX, maxY ) svgs =
             [ Svg.svg
                 [ Attributes.width (toString width)
                 , Attributes.height (toString height)
+                , Attributes.stroke "white"
+                , Attributes.strokeWidth "0.5"
+                , Attributes.strokeOpacity "0.5"
+                , Attributes.fillOpacity "0.5"
                 ]
                 (svgs
                     |> List.map
@@ -215,60 +295,3 @@ update msg model =
 subscriptions : Model -> Sub Msg
 subscriptions model =
     AnimationFrame.times Tick
-
-
-
--- alternative Geometry
-
-
-cube : List Face
-cube =
-    [ -- top
-      Face
-        [ Point3d ( -50, -50, -50 )
-        , Point3d ( 50, -50, -50 )
-        , Point3d ( 50, -50, 50 )
-        , Point3d ( -50, -50, 50 )
-        ]
-        "#9CD253"
-      -- bottom
-    , Face
-        [ Point3d ( -50, 50, -50 )
-        , Point3d ( 50, 50, -50 )
-        , Point3d ( 50, 50, 50 )
-        , Point3d ( -50, 50, 50 )
-        ]
-        "#60B5CC"
-      -- back
-    , Face
-        [ Point3d ( -50, -50, -50 )
-        , Point3d ( 50, -50, -50 )
-        , Point3d ( 50, 50, -50 )
-        , Point3d ( -50, 50, -50 )
-        ]
-        "#34495E"
-      -- front
-    , Face
-        [ Point3d ( -50, -50, 50 )
-        , Point3d ( 50, -50, 50 )
-        , Point3d ( 50, 50, 50 )
-        , Point3d ( -50, 50, 50 )
-        ]
-        "#5A6275"
-      --left
-    , Face
-        [ Point3d ( -50, -50, -50 )
-        , Point3d ( -50, 50, -50 )
-        , Point3d ( -50, 50, 50 )
-        , Point3d ( -50, -50, 50 )
-        ]
-        "#E5A63A"
-      --right
-    , Face
-        [ Point3d ( 50, -50, -50 )
-        , Point3d ( 50, 50, -50 )
-        , Point3d ( 50, 50, 50 )
-        , Point3d ( 50, -50, 50 )
-        ]
-        "#A63AE5"
-    ]
